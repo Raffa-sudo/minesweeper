@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Minesweeper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+    * { box-sizing: border-box; }
+    body {
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #c0c0c0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 20px;
+        margin: 0;
+        min-height: 100vh;
+    }
+    h1 { margin: 0 0 10px; color: #333; }
+
+    .panel {
+        background: #bdbdbd;
+        border: 4px outset #eee;
+        padding: 10px 16px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        margin-bottom: 12px;
+        border-radius: 4px;
+    }
+    .counter {
+        background: #000;
+        color: #ff3b30;
+        font-family: "Courier New", monospace;
+        font-weight: bold;
+        font-size: 22px;
+        padding: 4px 10px;
+        border-radius: 3px;
+        min-width: 56px;
+        text-align: center;
+    }
+    .face {
+        font-size: 26px;
+        background: #d9d9d9;
+        border: 3px outset #fff;
+        border-radius: 4px;
+        width: 42px;
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+    }
+    .face:active { border-style: inset; }
+
+    .difficulties { display: flex; gap: 6px; margin-bottom: 14px; }
+    .difficulties button {
+        font: inherit;
+        cursor: pointer;
+        padding: 6px 12px;
+        background: #ddd;
+        border: 2px outset #fff;
+        border-radius: 4px;
+        color: #333;
+        font-size: 14px;
+    }
+    .difficulties button.active { background: #9ccc65; border-style: inset; }
+
+    table.board {
+        border-collapse: collapse;
+        border: 4px solid;
+        border-color: #7b7b7b #eee #eee #7b7b7b;
+        background: #bdbdbd;
+        user-select: none;
+    }
+    table.board td {
+        width: 26px;
+        height: 26px;
+        text-align: center;
+        vertical-align: middle;
+        padding: 0;
+        font-weight: bold;
+        font-size: 14px;
+        font-family: "Courier New", monospace;
+        cursor: pointer;
+    }
+    .cell-hidden {
+        background: #bdbdbd;
+        border: 3px outset #eee;
+    }
+    .cell-revealed {
+        background: #d7d7d7;
+        border: 1px solid #999;
+        cursor: default;
+    }
+    .cell-mine { background: #ff5252; }
+    .flag { color: #d32f2f; }
+
+    .status-msg {
+        margin-top: 14px;
+        font-size: 18px;
+        font-weight: bold;
+        padding: 8px 16px;
+        border-radius: 4px;
+        min-height: 1.4em;
+        visibility: hidden;
+    }
+    .status-msg.show { visibility: visible; }
+    .status-won  { background: #c8e6c9; color: #2e7d32; }
+    .status-lost { background: #ffcdd2; color: #c62828; }
+
+    .hint {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #444;
+        max-width: 420px;
+        text-align: center;
+    }
+</style>
+</head>
+<body>
+
+<h1>💣 Minesweeper</h1>
+
+<div class="difficulties" id="difficulties">
+    <button data-diff="easy">Easy 9×9</button>
+    <button data-diff="medium">Medium 16×16</button>
+    <button data-diff="hard">Hard 16×30</button>
+</div>
+
+<div class="panel">
+    <div class="counter" id="mineCounter">000</div>
+    <div class="face" id="faceBtn" title="New game">🙂</div>
+    <div class="counter" id="timeCounter">000</div>
+    <div class="face" id="muteBtn" title="Mute/unmute music" style="font-size:20px;">🔊</div>
+</div>
+
+<table class="board" id="board"></table>
+
+<div class="status-msg" id="statusMsg"></div>
+
+<p class="hint">
+    <strong>Left-click</strong> a tile to reveal it, <strong>right-click</strong> to plant or remove a flag.
+    Click the face to start a new game. Music starts on your first move, stops on win or loss, and a matching
+    sound effect plays for each outcome. Use the speaker icon to mute everything anytime.
+</p>
+
+<div id="yt-player" style="position:absolute; top:-9999px; left:-9999px; width:1px; height:1px;"></div>
+<div id="yt-win" style="position:absolute; top:-9999px; left:-9999px; width:1px; height:1px;"></div>
+<div id="yt-lose" style="position:absolute; top:-9999px; left:-9999px; width:1px; height:1px;"></div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+(function () {
+    const NUMBER_COLORS = {
+        1: '#1976d2', 2: '#388e3c', 3: '#d32f2f', 4: '#7b1fa2',
+        5: '#ff8f00', 6: '#0097a7', 7: '#424242', 8: '#000000'
+    };
+    const DIFFICULTIES = {
+        easy:   { rows: 9,  cols: 9,  mines: 10 },
+        medium: { rows: 16, cols: 16, mines: 40 },
+        hard:   { rows: 16, cols: 30, mines: 99 }
+    };
+
+    const boardEl = document.getElementById('board');
+    const mineCounterEl = document.getElementById('mineCounter');
+    const timeCounterEl = document.getElementById('timeCounter');
+    const faceBtn = document.getElementById('faceBtn');
+    const muteBtn = document.getElementById('muteBtn');
+    const statusMsg = document.getElementById('statusMsg');
+    const diffButtons = document.querySelectorAll('#difficulties button');
+
+    // ---- Game state (all client-side, no server involved) ----
+    let game = null; // { rows, cols, mines, difficulty, board, revealed, flagged, status, firstClick, startTime, endTime }
+    let timerHandle = null;
+
+    function newGame(difficulty) {
+        const cfg = DIFFICULTIES[difficulty] || DIFFICULTIES.easy;
+        game = {
+            difficulty,
+            rows: cfg.rows,
+            cols: cfg.cols,
+            mines: cfg.mines,
+            board: null, // generated lazily on first reveal, 2D array of 'M' or 0-8
+            revealed: Array.from({ length: cfg.rows }, () => Array(cfg.cols).fill(false)),
+            flagged: Array.from({ length: cfg.rows }, () => Array(cfg.cols).fill(false)),
+            status: 'playing', // playing | won | lost
+            firstClick: true,
+            startTime: null,
+            endTime: null
+        };
+    }
+
+    function neighbours(r, c, rows, cols) {
+        const out = [];
+        for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+                if (dr === 0 && dc === 0) continue;
+                const nr = r + dr, nc = c + dc;
+                if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) out.push([nr, nc]);
+            }
+        }
+        return out;
+    }
+
+    function placeMines(rows, cols, mineCount, safeR, safeC) {
+        const board = Array.from({ length: rows }, () => Array(cols).fill(0));
+        let placed = 0;
+        while (placed < mineCount) {
+            const r = Math.floor(Math.random() * rows);
+            const c = Math.floor(Math.random() * cols);
+            if (Math.abs(r - safeR) <= 1 && Math.abs(c - safeC) <= 1) continue;
+            if (board[r][c] === 'M') continue;
+            board[r][c] = 'M';
+            placed++;
+        }
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (board[r][c] === 'M') continue;
+                let count = 0;
+                for (const [nr, nc] of neighbours(r, c, rows, cols)) {
+                    if (board[nr][nc] === 'M') count++;
+                }
+                board[r][c] = count;
+            }
+        }
+        return board;
+    }
+
+    function floodReveal(r, c) {
+        const { rows, cols, board, revealed, flagged } = game;
+        const stack = [[r, c]];
+        while (stack.length) {
+            const [cr, cc] = stack.pop();
+            if (revealed[cr][cc] || flagged[cr][cc]) continue;
+            revealed[cr][cc] = true;
+            if (board[cr][cc] === 0) {
+                for (const [nr, nc] of neighbours(cr, cc, rows, cols)) {
+                    if (!revealed[nr][nc] && !flagged[nr][nc]) stack.push([nr, nc]);
+                }
+            }
+        }
+    }
+
+    function checkWin() {
+        const { rows, cols, board, revealed } = game;
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (board[r][c] !== 'M' && !revealed[r][c]) return false;
+            }
+        }
+        return true;
+    }
+
+    function revealAllMines() {
+        const { rows, cols, board, revealed } = game;
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (board[r][c] === 'M') revealed[r][c] = true;
+            }
+        }
+    }
+
+    function reveal(r, c) {
+        if (game.status !== 'playing') return;
+        if (game.flagged[r][c] || game.revealed[r][c]) return;
+
+        if (game.firstClick) {
+            game.board = placeMines(game.rows, game.cols, game.mines, r, c);
+            game.firstClick = false;
+            game.startTime = Date.now();
+        }
+
+        if (game.board[r][c] === 'M') {
+            game.revealed[r][c] = true;
+            game.status = 'lost';
+            game.endTime = Date.now();
+            revealAllMines();
+        } else {
+            floodReveal(r, c);
+            if (checkWin()) {
+                game.status = 'won';
+                game.endTime = Date.now();
+            }
+        }
+    }
+
+    function toggleFlag(r, c) {
+        if (game.status !== 'playing') return;
+        if (game.revealed[r][c]) return;
+        game.flagged[r][c] = !game.flagged[r][c];
+    }
+
+    function getElapsed() {
+        if (game.startTime === null) return 0;
+        const end = game.endTime ?? Date.now();
+        return Math.floor((end - game.startTime) / 1000);
+    }
+
+    function getFlagsLeft() {
+        let used = 0;
+        for (const row of game.flagged) {
+            for (const f of row) if (f) used++;
+        }
+        return Math.max(0, game.mines - used);
+    }
+
+    // ---- Background music + win/lose sound effects (YouTube IFrame API) ----
+    const YT_VIDEO_ID = 'Ck47gfEhWqQ';
+    const YT_WIN_ID = 'rzxLd9M5yp8';
+    const YT_LOSE_ID = 'Y2A43FW0fb4';
+    let ytPlayer = null, ytWinPlayer = null, ytLosePlayer = null;
+    let ytReady = false, ytWinReady = false, ytLoseReady = false;
+    let musicStarted = false, musicMuted = false;
+    let winSoundPlayed = false, loseSoundPlayed = false;
+
+    window.onYouTubeIframeAPIReady = function () {
+        ytPlayer = new YT.Player('yt-player', {
+            height: '1', width: '1', videoId: YT_VIDEO_ID,
+            playerVars: { autoplay: 0, controls: 0, disablekb: 1, loop: 1, playlist: YT_VIDEO_ID },
+            events: {
+                onReady: function () {
+                    ytReady = true;
+                    if (game && game.startTime !== null && game.status === 'playing' && !musicStarted) startMusic();
+                }
+            }
+        });
+
+        ytWinPlayer = new YT.Player('yt-win', {
+            height: '1', width: '1', videoId: YT_WIN_ID,
+            playerVars: { autoplay: 0, controls: 0, disablekb: 1 },
+            events: {
+                onReady: function () {
+                    ytWinReady = true;
+                    if (game && game.status === 'won' && !winSoundPlayed) {
+                        playWinSound();
+                    } else {
+                        preWarm(ytWinPlayer);
+                    }
+                }
+            }
+        });
+
+        ytLosePlayer = new YT.Player('yt-lose', {
+            height: '1', width: '1', videoId: YT_LOSE_ID,
+            playerVars: { autoplay: 0, controls: 0, disablekb: 1 },
+            events: {
+                onReady: function () {
+                    ytLoseReady = true;
+                    if (game && game.status === 'lost' && !loseSoundPlayed) {
+                        playLoseSound();
+                    } else {
+                        preWarm(ytLosePlayer);
+                    }
+                }
+            }
+        });
+    };
+
+    // Silently play + immediately pause a fresh player so its video is fully
+    // buffered ahead of time. Without this, the FIRST playVideo() call on a
+    // freshly-loaded YouTube player has to buffer before sound starts, which
+    // is exactly the ~0.5s delay you'd otherwise hear right when you lose.
+    function preWarm(player) {
+        try {
+            player.mute();
+            player.playVideo();
+            setTimeout(() => {
+                try {
+                    player.pauseVideo();
+                    player.seekTo(0, true);
+                    if (!musicMuted) player.unMute();
+                } catch (e) {}
+            }, 250);
+        } catch (e) {}
+    }
+
+    function startMusic() {
+        if (!ytReady || musicStarted) return;
+        musicStarted = true;
+        try { ytPlayer.playVideo(); } catch (e) {}
+    }
+
+    function stopMusic() {
+        musicStarted = false;
+        if (ytReady) { try { ytPlayer.stopVideo(); } catch (e) {} }
+    }
+
+    function playWinSound() {
+        if (!ytWinReady || winSoundPlayed) return;
+        winSoundPlayed = true;
+        try { ytWinPlayer.playVideo(); } catch (e) {}
+    }
+
+    function playLoseSound() {
+        if (!ytLoseReady || loseSoundPlayed) return;
+        loseSoundPlayed = true;
+        try { ytLosePlayer.playVideo(); } catch (e) {}
+    }
+
+    function resetEndSounds() {
+        winSoundPlayed = false;
+        loseSoundPlayed = false;
+        // pauseVideo + seekTo keeps the video buffered and ready — stopVideo()
+        // would unload it and bring back the delay on the next play.
+        if (ytWinReady) { try { ytWinPlayer.pauseVideo(); ytWinPlayer.seekTo(0, true); } catch (e) {} }
+        if (ytLoseReady) { try { ytLosePlayer.pauseVideo(); ytLosePlayer.seekTo(0, true); } catch (e) {} }
+    }
+
+    muteBtn.addEventListener('click', () => {
+        if (!ytReady) return;
+        musicMuted = !musicMuted;
+        if (musicMuted) {
+            ytPlayer.mute();
+            if (ytWinReady) ytWinPlayer.mute();
+            if (ytLoseReady) ytLosePlayer.mute();
+            muteBtn.textContent = '🔇';
+        } else {
+            ytPlayer.unMute();
+            if (ytWinReady) ytWinPlayer.unMute();
+            if (ytLoseReady) ytLosePlayer.unMute();
+            muteBtn.textContent = '🔊';
+        }
+    });
+
+    // ---- Rendering ----
+    function pad3(n) {
+        n = Math.max(0, Math.min(999, Math.floor(n)));
+        return String(n).padStart(3, '0');
+    }
+
+    function renderBoard() {
+        const needsRebuild = boardEl.dataset.rows != game.rows || boardEl.dataset.cols != game.cols;
+
+        if (needsRebuild) {
+            boardEl.innerHTML = '';
+            boardEl.dataset.rows = game.rows;
+            boardEl.dataset.cols = game.cols;
+            for (let r = 0; r < game.rows; r++) {
+                const tr = document.createElement('tr');
+                for (let c = 0; c < game.cols; c++) {
+                    const td = document.createElement('td');
+                    td.dataset.r = r;
+                    td.dataset.c = c;
+                    td.addEventListener('click', onCellLeftClick);
+                    td.addEventListener('contextmenu', onCellRightClick);
+                    tr.appendChild(td);
+                }
+                boardEl.appendChild(tr);
+            }
+        }
+
+        const cellEls = boardEl.querySelectorAll('td');
+        let i = 0;
+        for (let r = 0; r < game.rows; r++) {
+            for (let c = 0; c < game.cols; c++) {
+                const td = cellEls[i++];
+                const isRevealed = game.revealed[r][c];
+                const isFlagged = game.flagged[r][c];
+                const value = isRevealed && game.board ? game.board[r][c] : null;
+
+                td.className = isRevealed ? 'cell-revealed' : 'cell-hidden';
+                td.innerHTML = '';
+
+                if (isRevealed) {
+                    if (value === 'M') {
+                        td.classList.add('cell-mine');
+                        td.textContent = '💣';
+                    } else if (typeof value === 'number' && value > 0) {
+                        const span = document.createElement('span');
+                        span.style.color = NUMBER_COLORS[value] || '#000';
+                        span.textContent = value;
+                        td.appendChild(span);
+                    }
+                } else if (isFlagged) {
+                    const span = document.createElement('span');
+                    span.className = 'flag';
+                    span.textContent = '🚩';
+                    td.appendChild(span);
+                }
+            }
+        }
+    }
+
+    function renderPanel() {
+        mineCounterEl.textContent = pad3(getFlagsLeft());
+        timeCounterEl.textContent = pad3(getElapsed());
+        faceBtn.textContent = game.status === 'won' ? '😎' : game.status === 'lost' ? '😵' : '🙂';
+
+        diffButtons.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.diff === game.difficulty);
+        });
+
+        if (game.status === 'won') {
+            statusMsg.textContent = '🎉 You win! Cleared the board in ' + getElapsed() + 's.';
+            statusMsg.className = 'status-msg status-won show';
+        } else if (game.status === 'lost') {
+            statusMsg.textContent = '💥 Boom! You hit a mine. Try again.';
+            statusMsg.className = 'status-msg status-lost show';
+        } else {
+            statusMsg.className = 'status-msg';
+            statusMsg.textContent = '';
+        }
+    }
+
+    function renderAll() {
+        renderBoard();
+        renderPanel();
+        manageTimer();
+
+        if (game.status === 'playing' && game.startTime !== null) {
+            startMusic();
+        } else if (game.status === 'won') {
+            stopMusic();
+            playWinSound();
+        } else if (game.status === 'lost') {
+            stopMusic();
+            playLoseSound();
+        }
+    }
+
+    function manageTimer() {
+        if (game.status === 'playing') {
+            if (!timerHandle) {
+                timerHandle = setInterval(() => {
+                    renderPanel();
+                }, 1000);
+            }
+        } else if (timerHandle) {
+            clearInterval(timerHandle);
+            timerHandle = null;
+        }
+    }
+
+    // ---- Event handlers ----
+    function onCellLeftClick(e) {
+        const td = e.currentTarget;
+        reveal(parseInt(td.dataset.r, 10), parseInt(td.dataset.c, 10));
+        renderAll();
+    }
+
+    function onCellRightClick(e) {
+        e.preventDefault(); // stop the browser's context menu — stay on this page
+        const td = e.currentTarget;
+        toggleFlag(parseInt(td.dataset.r, 10), parseInt(td.dataset.c, 10));
+        renderAll();
+    }
+
+    faceBtn.addEventListener('click', () => {
+        stopMusic();
+        resetEndSounds();
+        newGame(game.difficulty);
+        renderAll();
+    });
+
+    diffButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            stopMusic();
+            resetEndSounds();
+            newGame(btn.dataset.diff);
+            renderAll();
+        });
+    });
+
+    boardEl.addEventListener('contextmenu', e => e.preventDefault());
+
+    // ---- Boot ----
+    newGame('easy');
+    renderAll();
+})();
+</script>
+
+</body>
+</html>
